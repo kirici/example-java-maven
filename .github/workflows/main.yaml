@@ -1,0 +1,79 @@
+name: "Build"
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    needs: build
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+      - name: Complete package
+        continue-on-error: true
+        run: mvn -B -ntp clean package spotbugs:spotbugs
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          # Path to SARIF file relative to the root of the repository
+          sarif_file: target/reports/spotbugs.sarif
+      - name: Set up codeql
+        uses: github/codeql-action/init@v2
+        with:
+          languages: java
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+      - name: Run codeql analysis
+        uses: github/codeql-action/analyze@v2
+      - name: Fix findings' locations to be relative to repo root
+        # Literal block scalar '|' only used to preserve syntax highlighting in an easy manner
+        run: |
+          sed -i -re 's!"uri": "${{ github.workspace }}/!"uri": "!g' target/checkstyle-report.sarif
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          # Path to SARIF file relative to the root of the repository
+          sarif_file: target/checkstyle-report.sarif
+  scan-container:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+      - name: Build JAR
+        run: mvn clean --batch-mode package
+      - name: Build Image
+        run: docker build -t '${{ github.repository }}:${{ github.sha }}' .
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ github.repository }}:${{ github.sha }}"
+          exit-code: "1"
+          hide-progress: false
+          format: "sarif"
+          output: "trivy-results-EXAMPLE.sarif"
+          severity: "CRITICAL,HIGH"
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: "trivy-results-EXAMPLE.sarif"
